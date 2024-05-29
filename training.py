@@ -15,43 +15,34 @@ from processing import interpolate
 
 def create_train_step(key, model, lr, d):
 
-    HTy_init = jnp.zeros((1, 1, d))
+    Y_init = jnp.zeros((1, 1, d))
 
 
-    x_init = jnp.zeros((1, 1, 1, d))
-    HH_init = jnp.zeros((1, d, d))
+    X_init = jnp.zeros((1, 1, 1, d))
+    H_init = jnp.zeros((1, d, d))
     blur_init = jnp.array([1])
-    # L0 = jnp.eye(d)
-    # HH = jnp.diagonal(H.T@H)
 
-    parameter_state = model.init(key, x_init, HTy_init, HH_init, blur_init)
+    parameter_state = model.init(key, X_init, Y_init, H_init, blur_init)
     partition_optimizers = {'trainable': optax.adam(lr), 'frozen': optax.set_to_zero()}
     param_partitions = traverse_util.path_aware_map(
         lambda path, v: 'frozen' if 'blur_embedding' in path else 'trainable', parameter_state)
     optimizer = optax.multi_transform(partition_optimizers, param_partitions)
-    # optimizer = optax.adam(learning_rate=lr)
     opt_state = optimizer.init(parameter_state)
 
-    def reconstruction_loss(parameter_state, Z_batch, X_batch, HTY_batch, HTH_batch, blur_batch):
+    def reconstruction_loss(parameter_state, Z_batch, X_batch, Y_batch, H_batch, blur_batch):
 
-        reconstruction_batch, posterior_batch = model.apply(parameter_state, Z_batch, HTY_batch, HTH_batch, blur_batch)
+        reconstruction_batch, posterior_batch = model.apply(parameter_state, Z_batch, Y_batch, H_batch, blur_batch)
         squared_residual = optax.l2_loss(reconstruction_batch, X_batch)
-        # weight = (1/(blur_batch+1))**2
-        # weight /= weight.sum()
-        # weighted_residual = jnp.diag(weight) @ squared_residual
-        # x_normalization = (X_batch**2).mean(axis=2)
-        # normalization = jnp.maximum(x_normalization, 1.)
         normalized_residual = squared_residual
-        # trace = jnp.trace(posterior_batch, axis1=3, axis2=4)
         loss = normalized_residual.mean() 
         return loss
 
     @jax.jit
-    def train_step(parameter_state, opt_state, Z_batch, X_batch, HTY_batch, HTH_batch, blur_batch):
+    def train_step(parameter_state, opt_state, Z_batch, X_batch, Y_batch, H_batch, blur_batch):
         loss_grad_fn = jax.value_and_grad(reconstruction_loss)
 
         loss, grads = loss_grad_fn(parameter_state, Z_batch, X_batch,
-                                   HTY_batch, HTH_batch, blur_batch)
+                                   Y_batch, H_batch, blur_batch)
         updates, opt_state = optimizer.update(grads, opt_state)
         parameter_state = optax.apply_updates(parameter_state, updates)
 
@@ -63,32 +54,30 @@ def training_loop(
         model,
         X,
         Z0,
-        HTY_train,
-        HTH_values,
+        Y_train,
+        H_values,
         n_epochs,
         batch_size,
         blur_batch_size=None,
         test_function=None,
         lr=1e-3,
-        plot_reconstructions=None
         ):
     
     print(f'n_epochs = {n_epochs}')
 
     n_train, d = X.shape
-    n_train, n_processes, d = HTY_train.shape
+    n_train, n_processes, d = Y_train.shape
 
     key = random.key(0)
     train_step, parameter_state, opt_state = create_train_step(key, model, lr, d)
 
-    # blur_batch_size = 3
     blur_batch_size = model.blur_max if blur_batch_size is None else blur_batch_size
     process_batch_size = 1
     n_grad = n_train//batch_size
     loss_values = np.zeros(n_epochs)
     error_values = []
     for epoch in tqdm(range(n_epochs)):
-        X_epoch, HTY_epoch, Z0_epoch = shuffle(X, HTY_train, Z0)
+        X_epoch, Y_epoch, Z0_epoch = shuffle(X, Y_train, Z0)
         for grad_index in range(n_grad):
 
             batch_blur_values = 1 + np.random.choice(model.blur_max, size=blur_batch_size, replace=False)
@@ -96,9 +85,8 @@ def training_loop(
 
             X_batch = X_epoch[grad_index*batch_size:(grad_index+1)*batch_size]
             Z0_batch = Z0_epoch[grad_index*batch_size:(grad_index+1)*batch_size][:, H_indices]
-            # X_batch = jnp.transpose(np.array([X_true]*(n_blur)), (1, 2, 0, 3))[:, H_indices]
-            HTY_batch = HTY_epoch[grad_index*batch_size:(grad_index+1)*batch_size, H_indices]
-            HTH_batch = HTH_values[H_indices]
+            Y_batch = Y_epoch[grad_index*batch_size:(grad_index+1)*batch_size, H_indices]
+            Hbatch = H_values[H_indices]
 
             X_batch_process = jnp.repeat(
                 jnp.expand_dims(X_batch, 1), process_batch_size, axis=1)
@@ -106,31 +94,11 @@ def training_loop(
             X_batch_multi = jnp.repeat(
                 jnp.expand_dims(X_batch_process, 2), blur_batch_size, axis=2)
 
-            # print(f'X_batch_multi {X_batch_multi.shape}')
-            # print(f'Z_batch {Z_batch.shape}')
-            # print(f'HTY_batch {HTY_batch.shape}')
-            # print(f'HTH_batch {HTH_batch.shape}')
-
-            parameter_state, opt_state, loss = train_step(parameter_state, opt_state, Z_batch, X_batch_multi, HTY_batch, HTH_batch, batch_blur_values)
+            parameter_state, opt_state, loss = train_step(parameter_state, opt_state, Z_batch, X_batch_multi, Y_batch, Hbatch, batch_blur_values)
         loss_values[epoch] = loss
 
         X_hat_values, test_error_values = test_function(model, parameter_state)
         error_values.append(test_error_values)
-        # print(f'loss = {loss}, error = {test_error_values[0]}')
-
-        # wandb.log(
-        #     {"error": test_error_values[0], 'one-step-error': test_error_values[-2], "loss": loss})
-       
-        if epoch % 10 != 0:
-            continue
-        # continue
-
-        test_index = 1
-
-        plt.figure(figsize=(12, 6))
-        plot_reconstructions(X_hat_values)
-        plt.pause(0.5)
-        plt.close('all')
 
     return parameter_state, loss_values, error_values
 

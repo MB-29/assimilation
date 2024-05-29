@@ -79,7 +79,7 @@ lr = 5e-4
 
 # @jax.jit
 def evaluate_model(model, parameter_state):
-    X_hat_values = model.reconstruct_multi(
+    X_hat_values = model.reconstruct(
         parameter_state, Z_test, Y_test, H_test)
     X_test_multi = jnp.array([X_test for i in range(n_processes_test)]).transpose(1, 0, 2)
     test_error_values = [optax.l2_loss(
@@ -123,7 +123,7 @@ trained_parameter_state, loss_values, error_values = training_loop(
     batch_size,
     test_function=evaluate_model,
     lr=lr,
-    plot_reconstructions=plot_reconstructions
+    # plot_reconstructions=plot_reconstructions
     )
 
 # model_name = (f'unconditional')
