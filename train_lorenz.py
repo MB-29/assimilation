@@ -6,10 +6,10 @@ import optax
 import matplotlib.pyplot as plt
 import orbax.checkpoint as ocp
 
-from models.neural import NeuralAssimilation as Model
+from models.neural_assimilation import NeuralAssimilation as Model
 # from models.unconditional import Unconditional as Model
 
-from training import train_multi
+from training import training_loop
 from processing import interpolate, build_observation_matrix
 
 from systems.lorenz import Lorenz as System
@@ -22,52 +22,47 @@ system = System(T, dt)
 
 
 d = system.d
-n_samples = 2_000
+n_samples = 2_001
 string = f'_multi_d={system.d}_n_samples={n_samples}'
 data = system.load_data(string=string)
 
 
 X = data['X']
 X_gaussian = data['X_gaussian']
-Y_values = data['Y']
-HTY_values = data['HTY']
+y_values = data['Y']
+Y_values = data['HTY']
 H_values = data['H_values']
-HTH_values = data['HTH_values']
-posterior_values = data['posterior_values']
+H_Values = data['HTH_values']
+# posterior_values = data['posterior_values']
 rho = data['rho']
 observed_indices = data['observed_indices']
 n_samples = data['n_samples']
 n_train = data['n_train']
 n_processes = data['n_processes']
-n_processes_train = data['n_processes_train']
+n_processes_train = 8
 n_processes_test = n_processes - n_processes_train
 
 
 
-n_interpolations = 3
-blur_values = np.arange(n_interpolations+1)
-X_multi = jnp.array([interpolate(X, X_gaussian[index], n_interpolations) for index in range(n_processes)])
-X_multi = X_multi.transpose(1, 0, 2, 3)
+n_increments = 3
+blur_values = np.arange(n_increments+1)
 
 deblurring_values = blur_values[1:]
 
-X_train_multi = X_multi[:n_train, :n_processes_train] 
+X_train = X[:n_train] 
+Z_train = X_gaussian[:n_train] 
 
-HTY_train_multi = HTY_values[:n_train, :n_processes_train]
-HTH_train_values = HTH_values[:n_processes_train]
+Y_train = Y_values[:n_train, :n_processes_train]
+H_train = H_Values[:n_processes_train]
 
 X_test = X[n_train:]
-X_init_test = X_gaussian.transpose(1, 0, 2)[n_train:, n_processes_train:]
+Z_test = X_gaussian[n_train:, n_processes_train:]
 
-HTY_test_multi = HTY_values[n_train:, n_processes_train:]
-HTH_test_values = HTH_values[n_processes_train:]
-
-
+Y_test = Y_values[n_train:, n_processes_train:]
+H_test = H_Values[n_processes_train:]
 
 
-# HH = jnp.diagonal(H.T@H)
-
-model = Model(d, rho, n_interpolations)
+model = Model(d, rho, n_increments)
 
 print('training')
 
@@ -85,7 +80,7 @@ lr = 5e-4
 # @jax.jit
 def evaluate_model(model, parameter_state):
     X_hat_values = model.reconstruct_multi(
-        parameter_state, X_init_test, HTY_test_multi, HTH_test_values)
+        parameter_state, Z_test, Y_test, H_test)
     X_test_multi = jnp.array([X_test for i in range(n_processes_test)]).transpose(1, 0, 2)
     test_error_values = [optax.l2_loss(
         X_hat.squeeze(), X_test_multi).mean() for X_hat in X_hat_values]
@@ -97,16 +92,16 @@ def evaluate_model(model, parameter_state):
 
 test_index, process_index = 45, 0
 x = X_test[test_index]
-y = Y_values[n_processes_train+process_index][n_train+test_index]
+y = y_values[n_processes_train+process_index][n_train+test_index]
 sample_observed_indices = observed_indices[n_processes_train+process_index]
 H = build_observation_matrix(sample_observed_indices, d)
-x_gaussian = X_init_test[test_index, process_index]
+x_gaussian = Z_test[test_index, process_index]
 def plot_reconstructions(X_hat_values, **kwargs):
-    # iteration_indices = np.arange(0, n_interpolations, 5)
-    iteration_indices = np.arange(n_interpolations)
+    # iteration_indices = np.arange(0, n_increments, 5)
+    iteration_indices = np.arange(n_increments)
     n_rows = len(iteration_indices)
     for row_index, iteration in enumerate(iteration_indices):
-        blur_index = n_interpolations-iteration-1
+        blur_index = n_increments-iteration-1
         x_hat = X_hat_values[blur_index, test_index, process_index]
         system.plot_trajectory(x, n_rows=n_rows,
                                row_index=row_index, color='black', lw=2)
@@ -118,11 +113,12 @@ def plot_reconstructions(X_hat_values, **kwargs):
             y, sample_observed_indices, n_rows=n_rows, row_index=row_index)
 
 
-trained_parameter_state, loss_values, error_values = train_multi(
+trained_parameter_state, loss_values, error_values = training_loop(
     model,
-    X_train_multi,
-    HTY_train_multi,
-    HTH_train_values,
+    X_train,
+    Z_train,
+    Y_train,
+    H_train,
     n_epochs,
     batch_size,
     test_function=evaluate_model,
@@ -143,9 +139,9 @@ plt.yscale('log')
 plt.subplot(2, 1, 2)
 # for iteration in 
 plt.yscale('log')
-for blur_index in range(n_interpolations+1):
+for blur_index in range(n_increments+1):
 # blur_index = 0
-    plt.plot(np.array(error_values)[:, blur_index], color='red', alpha=1-0.9*blur_index/n_interpolations)
+    plt.plot(np.array(error_values)[:, blur_index], color='red', alpha=1-0.9*blur_index/n_increments)
 # plt.plot(np.array(error_values)[:, 0])
 # plt.axhline(gaussian_error, ls='--', color='blue')
 plt.show()

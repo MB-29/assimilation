@@ -78,7 +78,7 @@ class Lorenz(BaseSystem):
 
 if __name__ == '__main__':
 
-    n_samples = 2_000
+    n_samples = 2_001
     n_train = 1_800
 
     T = 32

@@ -15,42 +15,40 @@ from jax.scipy.linalg import solve
 class NeuralAssimilationPoint(nn.Module):
     d: int
     r: float
-    n_blur: int
-    # HH: jax.Array
-    k: int = 10
-    assimilation: str ='conditional'
+    blur_max: int
+    k: int = 5
 
 
     def setup(self):
 
         self.L = nn.Sequential([
-            nn.Dense(64),
+            nn.Dense(32),
             nn.tanh,
-            nn.Dense(64),
+            nn.Dense(32),
             nn.tanh,
-            nn.Dense(64),
+            nn.Dense(32),
             nn.tanh,
-            nn.Dense(64),
+            nn.Dense(32),
             nn.tanh,
             # nn.Dense(self.d*6-15),
             nn.Dense(self.d*self.k),
             nn.tanh
         ])
         self.mu = nn.Sequential([
-            nn.Dense(64),
+            nn.Dense(32),
             nn.tanh,
-            nn.Dense(64),
+            nn.Dense(32),
             nn.tanh,
-            nn.Dense(64),
+            nn.Dense(32),
             nn.tanh,
-            nn.Dense(64),
+            nn.Dense(32),
             nn.tanh,
             nn.Dense(self.d)
         ])
         sin_embedding = self.sinusoidal_embedding(feature_dimension=100)
         self.blur_embedding = nn.Embed(
-            self.n_blur, 100, embedding_init=lambda rng, shape, dtype: sin_embedding)
-        self.q = self.param('q', lambda rng, shape: 0.001, (1,))
+            self.blur_max, 100, embedding_init=lambda rng, shape, dtype: sin_embedding)
+        # self.q = self.param('q', lambda rng, shape: 0.001, (1,))
 
 
     
@@ -86,33 +84,34 @@ class NeuralAssimilationPoint(nn.Module):
 
         return M
     
-    def __call__(self, x, HTy, blur_index, HTH):
+    def __call__(self, x, HTy, HTH, blur):
 
-        x_blur = self.embed(x, blur_index) 
+        x_blur = self.embed(x, blur) 
         mu = self.mu(x_blur) 
         M = jnp.zeros((self.d, self.d))
         x_hat = mu
         # x_blur_obs = jnp.concatenate((x_blur, obs_embedding), axis=-1)
         
-        # # L = self.L(x_blur_obs)
+        L = self.L(x_blur).reshape((self.d, self.k))
         innovation = HTy - HTH@(mu)
-        prior = self.compute_prior(x, blur_index)
-        posterior = prior 
+        prior_precision = jnp.eye(self.d) + L@L.T
+        # prior_precision = jnp.eye(self.d) + self.compute_prior(x, blur).todense()
+        posterior_precision = (self.r**2)*prior_precision + HTH
+        # posterior_precision = 0.1*jnp.eye(self.d) + (1/self.r**2)*HTH
         # update = posterior @ innovation
-        update = posterior @ innovation
         # obs_embedding = jnp.diag(HTH)
         # L = self.L(x_blur).reshape((self.d, self.k))
         # P = L@L.T
         # prior_precision = jnp.eye(self.d) + P + (1/self.r**2)*HTH
-        # update = (1/self.r**2)*solve(prior_precision,
-                                    #  innovation, assume_a='pos')
+        # update = posterior @ innovation
+        update = solve(posterior_precision, innovation, assume_a='pos')
 
         x_hat =  mu + update
         # M = jnp.linalg.inv(prior_precision)
-        cov = prior.todense()
+        # cov = prior.todense()
         # cov = posterior
 
-        return x_hat, cov
+        return x_hat, M
 
     
     def sinusoidal_embedding(self, feature_dimension):
@@ -120,8 +119,8 @@ class NeuralAssimilationPoint(nn.Module):
 
         # Returns the standard positional embedding
         embedding = np.array([[i / 10_000 ** (2 * j / d)
-                               for j in range(d)] for i in range(self.n_blur)])
-        sin_mask = np.arange(0, self.n_blur, 2)
+                               for j in range(d)] for i in range(self.blur_max)])
+        sin_mask = np.arange(0, self.blur_max, 2)
 
         embedding[sin_mask] = np.sin(embedding[sin_mask])
         embedding[1 - sin_mask] = np.cos(embedding[sin_mask])
@@ -129,8 +128,8 @@ class NeuralAssimilationPoint(nn.Module):
         return jnp.array(embedding)
 
     def reconstruct_multi(self, parameter_state, X_init, HTY, HTH_values):
-        n_blur = self.n_blur
-        blur_values = np.arange(1, self.n_blur+1) 
+        n_blur = self.blur_max
+        blur_values = np.arange(1, self.blur_max+1) 
         batch_size, n_process, d = X_init.shape
         X0 = X_init.reshape((batch_size, n_process, 1, self.d))
         Xs = X0.copy()
@@ -149,7 +148,7 @@ class NeuralAssimilationPoint(nn.Module):
             # blur_ = jnp.array([blur])
             # blur_values = jnp.array([blur]).reshape((1, 1))
             # print(f'X_hat = {X_hat.shape}, HYY = {HTY.shape}, blur = {blur}, HTH = {HTH_values.shape}')
-            mu, cov = self.apply(parameter_state, Xs, HTY, blur, HTH_values)
+            mu, cov = self.apply(parameter_state, Xs, HTY, HTH_values, blur)
             # cov = self.apply(parameter_state, x_hat, blur_index, method=self.compute_posterior)
             x_hat = mu
             # x_hat = jnp.stack([np.random.multivariate_normal(mu[i, j], cov[]) 
@@ -169,8 +168,8 @@ class NeuralAssimilationPoint(nn.Module):
         return result
     
     def sample(self, parameter_state, X_init, HTY, HTH_values, test_index, process_index):
-        n_blur = self.n_blur
-        blur_values = np.arange(1, self.n_blur+1) 
+        n_blur = self.blur_max
+        blur_values = np.arange(1, self.blur_max+1) 
         batch_size, n_process, d = X_init.shape
         X0 = X_init.reshape((batch_size, n_process, 1, self.d))
         Xs = X0.copy()
@@ -189,7 +188,7 @@ class NeuralAssimilationPoint(nn.Module):
             # blur_ = jnp.array([blur])
             # blur_values = jnp.array([blur]).reshape((1, 1))
             # print(f'X_hat = {X_hat.shape}, HYY = {HTY.shape}, blur = {blur}, HTH = {HTH_values.shape}')
-            mu, cov = self.apply(parameter_state, Xs, HTY, blur, HTH_values)
+            mu, cov = self.apply(parameter_state, Xs, HTY, HTH_values, blur)
             # cov = self.apply(parameter_state, x_hat, blur_index, method=self.compute_posterior)
             x_hat = mu
             mu_sample = mu[test_index, process_index].squeeze()
@@ -219,22 +218,22 @@ class NeuralAssimilationPoint(nn.Module):
 
 
 # lifted_methods = ['__call__', 'embed']
-NeuralAssimilationGranularity = nn.vmap(
+NeuralAssimilationBlur = nn.vmap(
     NeuralAssimilationPoint,
-    in_axes=(0, None, 0, None), out_axes=0,
+    in_axes=(0, None, None, 0), out_axes=0,
     variable_axes={'params': None},
     split_rngs={'params': False},
     # methods=lifted_methods
 )
-NeuralAssimilationMulti = nn.vmap(
-    NeuralAssimilationGranularity,
-    in_axes=(0, 0, None, 0), out_axes=0,
+NeuralAssimilationObs = nn.vmap(
+    NeuralAssimilationBlur,
+    in_axes=(0, 0, 0, None), out_axes=0,
     variable_axes={'params': None},
     split_rngs={'params': False},
     # methods=lifted_methods
 )
 NeuralAssimilation = nn.vmap(
-    NeuralAssimilationMulti,
+    NeuralAssimilationObs,
     in_axes=(0, 0, None, None), out_axes=0,
     variable_axes={'params': None},
     split_rngs={'params': False},

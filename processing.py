@@ -10,12 +10,6 @@ def build_observation_matrix(observed_indices, d):
         H[obs_index, observed_indices[obs_index]] = 1
     return H
     
-def pad(y, observed_indices, d):
-    x = np.zeros(d)
-    for obs_index, state_index in enumerate(observed_indices):
-        x[state_index] = y[obs_index]
-    return x
-
 
 def normalize_trajectories(X):
     normalized_X = np.zeros_like(X)
@@ -23,6 +17,18 @@ def normalize_trajectories(X):
     std = np.sqrt(X.var(axis=0))
     normalized_X = (X - mean)/std
     return normalized_X
+
+
+def rescale_trajectory(x, mean_values, std_values):
+    # n_samples, d = X.shape
+    n_dims, T = mean_values.shape
+    rescaled_x = x.copy()
+    for i in range(n_dims):
+        ui_values = x[i::n_dims]
+        mean = mean_values[i]
+        std = std_values[i]
+        rescaled_x[i::n_dims] = ui_values*std + mean
+    return rescaled_x
 
 def create_dataset(
         X,
@@ -42,7 +48,7 @@ def create_dataset(
     HTY_values = [] 
     HTH_values = [] 
     Y_values = []
-    X_gaussian_values = np.zeros((n_processes, n_samples, d))
+    X_gaussian_values = np.zeros((n_samples, n_processes, d))
     posterior_values = np.zeros((n_processes, d, d))
     empirical_mean = np.mean(X_train, axis=0)
 
@@ -66,10 +72,10 @@ def create_dataset(
 
         posterior_precision = precision_gaussian + (1/rho**2)*H.T@H
         K_gaussian = (1/rho**2)*solve(posterior_precision, H.T, assume_a='pos')
-        posterior_cov = np.linalg.inv(posterior_precision)
+        # posterior_cov = np.linalg.inv(posterior_precision)
         # scipy.linalg.solve(H@cov_gaussian.T@H.T + r_obs**2*np.eye(n_obs), H@cov_gaussian.T).T
-        X_gaussian_values[process_index] = mu_gaussian + (Y-H@mu_gaussian)@K_gaussian.T
-        posterior_values[process_index] = posterior_cov
+        X_gaussian_values[:, process_index, :] = mu_gaussian + (Y-H@mu_gaussian)@K_gaussian.T
+        # posterior_values[process_index] = posterior_cov
 
 
     # X_train = X[:n_train]
@@ -94,7 +100,7 @@ def create_dataset(
             'X_gaussian': jnp.array(X_gaussian_values),
             'H_values': H_values,
             'HTH_values': jnp.stack(HTH_values),
-            'posterior_values': posterior_values,
+            # 'posterior_values': posterior_values,
             'rho': rho,
             'observed_indices': observed_indices_values,
         # },
@@ -111,14 +117,23 @@ def create_dataset(
     }
     return data
 
-def interpolate(X, X_target, n_iterations):
-    batch_size, d = X.shape
-    X_interpolation = np.zeros((batch_size, n_iterations+1, d))
-    for iteration in range(n_iterations+1):
-        t = (iteration/n_iterations)
-        interpolation = t * X_target+ (1-t)*X
-        X_interpolation[:, iteration, :] = interpolation
+def interpolate(X, Z, blur_values, blur_max):
+    batch_size, n_processes, d = X.shape
+    n_blur = len(blur_values)
+    X_interpolation = np.zeros((batch_size, n_processes, n_blur, d))
+    for iteration, blur in enumerate(blur_values):
+        weight = (blur/blur_max)
+        interpolation = weight *Z + (1-weight)*X
+        X_interpolation[:, :, iteration, :] = interpolation
     return jnp.array(X_interpolation)
+# def interpolate(X, X_target, n_iterations):
+#     batch_size, d = X.shape
+#     X_interpolation = np.zeros((batch_size, n_iterations+1, d))
+#     for iteration in range(n_iterations+1):
+#         t = (iteration/n_iterations)
+#         interpolation = t * X_target+ (1-t)*X
+#         X_interpolation[:, iteration, :] = interpolation
+#     return jnp.array(X_interpolation)
 
 def add_noise(X, posterior_values, blur_values):
     batch_size, n_processes, n_interpolations, d = X.shape 
@@ -134,13 +149,3 @@ def add_noise(X, posterior_values, blur_values):
         noisy_X[:, process_index] = X[:, process_index] + noise
     return jnp.array(noisy_X)
 
-def rescale(x, mean_values, std_values):
-    # n_samples, d = X.shape
-    n_dims, T = mean_values.shape
-    rescaled_x = x.copy()
-    for i in range(n_dims):
-        ui_values = x[i::n_dims]
-        mean = mean_values[i]
-        std = std_values[i]
-        rescaled_x[i::n_dims] = ui_values*std + mean
-    return rescaled_x
