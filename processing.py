@@ -70,7 +70,6 @@ def create_dataset(
 
 
     data = {
-        # 'train': {
             'n_processes': n_processes,
             'n_processes_train': n_processes_train,
             'n_samples': n_samples,
