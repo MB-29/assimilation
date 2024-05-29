@@ -20,7 +20,6 @@ def normalize_trajectories(X):
 
 
 def rescale_trajectory(x, mean_values, std_values):
-    # n_samples, d = X.shape
     n_dims, T = mean_values.shape
     rescaled_x = x.copy()
     for i in range(n_dims):
@@ -38,10 +37,8 @@ def create_dataset(
         n_processes_train,
         theoretical_mean=None,
         theoretical_cov=None,
-        normalize=True
         ):
     n_samples, d = X.shape
-    # X = normalize_trajectories(X) if normalize else X
     X_train = X[:n_train]
     n_processes = len(observed_indices_values)
     H_values = [] 
@@ -59,10 +56,7 @@ def create_dataset(
     precision_gaussian = np.linalg.inv(cov_gaussian)
 
     for process_index, process_observed_indices in tqdm(enumerate(observed_indices_values)):
-        # print(f'process')
-        # process_observed_indices = observed_indices[process_index]
         n_obs = len(process_observed_indices) 
-        # n_obs = np.random.randint(4, 20)
         H = build_observation_matrix(process_observed_indices, d)
         H_values.append(H)
         Y = X@H.T + rho*np.random.randn(n_samples, n_obs)
@@ -72,20 +66,7 @@ def create_dataset(
 
         posterior_precision = precision_gaussian + (1/rho**2)*H.T@H
         K_gaussian = (1/rho**2)*solve(posterior_precision, H.T, assume_a='pos')
-        # posterior_cov = np.linalg.inv(posterior_precision)
-        # scipy.linalg.solve(H@cov_gaussian.T@H.T + r_obs**2*np.eye(n_obs), H@cov_gaussian.T).T
         X_gaussian_values[:, process_index, :] = mu_gaussian + (Y-H@mu_gaussian)@K_gaussian.T
-        # posterior_values[process_index] = posterior_cov
-
-
-    # X_train = X[:n_train]
-    # X_test = X[n_train:]
-    # X_gaussian_train = X_gaussian_values[:n_processes_train, :n_train]
-    # X_gaussian_test = X_gaussian_values[n_processes_train:, n_train:]
-    # # Y_train = Y_values[:n_processes_train][:n_train]
-    # Y_test = Y[n_processes_train:][n_train:]
-    # HTY_train = HTY_values[:n_processes_train, :n_train]
-    # HTY_test = HTY_values[n_processes_train:, n_train:]
 
 
     data = {
@@ -100,20 +81,8 @@ def create_dataset(
             'X_gaussian': jnp.array(X_gaussian_values),
             'H_values': H_values,
             'HTH_values': jnp.stack(HTH_values),
-            # 'posterior_values': posterior_values,
             'rho': rho,
             'observed_indices': observed_indices_values,
-        # },
-        # 'test': {
-        #     'X': jnp.array(X_test),
-        #     'Y': Y_test,
-        #     'HTY': HTY_test,
-        #     'X_gaussian': jnp.array(X_gaussian_test),
-        #     'H_values':  H_values[n_processes_train:],
-        #     'HTH_values':  HTH_values[n_processes_train:],
-        #     'rho': rho,
-        #     'observed_indices': observed_indices_values[n_processes_train:]
-        # }
     }
     return data
 
@@ -126,14 +95,6 @@ def interpolate(X, Z, blur_values, blur_max):
         interpolation = weight *Z + (1-weight)*X
         X_interpolation[:, :, iteration, :] = interpolation
     return jnp.array(X_interpolation)
-# def interpolate(X, X_target, n_iterations):
-#     batch_size, d = X.shape
-#     X_interpolation = np.zeros((batch_size, n_iterations+1, d))
-#     for iteration in range(n_iterations+1):
-#         t = (iteration/n_iterations)
-#         interpolation = t * X_target+ (1-t)*X
-#         X_interpolation[:, iteration, :] = interpolation
-#     return jnp.array(X_interpolation)
 
 def add_noise(X, posterior_values, blur_values):
     batch_size, n_processes, n_interpolations, d = X.shape 
